@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import sys
 import time
 import webbrowser
@@ -33,7 +34,8 @@ class WeBanClient:
     def __init__(self, tenant_name: str, account: str | None = None, password: str | None = None, user: Dict[str, str] | None = None, log=logger) -> None:
         self.log = log
         self.tenant_name = tenant_name.strip()
-        self.study_time = 15
+        self.study_time_min = 15
+        self.study_time_max = 30
         self.ocr = self.get_ocr_instance()
         if user and all([user.get("userId"), user.get("token")]):
             self.api = WeBanAPI(user=user)
@@ -130,7 +132,7 @@ class WeBanClient:
             # 考试
             exam_num = progress["examNum"]
             exam_finished_num = progress["examFinishedNum"]
-            eta = max(0, self.study_time * (required_num - required_finished_num + optional_num - optional_finished_num + push_num - push_finished_num))
+            eta = max(0, self.study_time_max * (required_num - required_finished_num + optional_num - optional_finished_num + push_num - push_finished_num))
             if output:
                 self.log.info(f"{project_prefix} 进度：必修课：{required_finished_num}/{required_num}，推送课：{push_finished_num}/{push_num}，自选课：{optional_finished_num}/{optional_num}，考试：{exam_finished_num}/{exam_num}，预计剩余时间：{eta} 秒")
         return progress
@@ -168,13 +170,17 @@ class WeBanClient:
             break
         return None
 
-    def run_study(self, study_time: int = 15, restudy_time: int = 0) -> None:
-        if study_time:
-            self.study_time = study_time
+    def run_study(self, study_time_min: int = 15, study_time_max: int = 120, restudy_time_min: int = 0, restudy_time_max: int=0) -> None:
+        if study_time_min:
+            self.study_time_min = study_time_min
 
-        if restudy_time:
-            self.study_time = restudy_time
-            self.log.info(f"重新学习模式已开启，所有课程将重新学习，每门课程学习 {self.study_time} 秒")
+        if study_time_max:
+            self.study_time_max = study_time_max
+
+        if restudy_time_min:
+            self.study_time_min = restudy_time_min
+            self.study_time_max = restudy_time_max
+            self.log.info(f"重新学习模式已开启，所有课程将重新学习，每门课程学习 {self.study_time_min} - {self.study_time_max} 秒")
 
         study_task = self.api.list_study_task()
         if study_task.get("code", -1) != "0":
@@ -214,13 +220,13 @@ class WeBanClient:
                 for category in categories.get("data", []):
                     category_prefix = f"{choose_type[1]} {project_prefix}/{category['categoryName']}"
                     self.log.info(f"开始处理 {category_prefix}")
-                    if not restudy_time and category["finishedNum"] >= category["totalNum"]:
+                    if not restudy_time_max and category["finishedNum"] >= category["totalNum"]:
                         self.log.success(f"{category_prefix} 已完成")
                         continue
 
                     # 获取学习进度
                     progress = self.get_progress(task["userProjectId"], project_prefix, False)
-                    if not restudy_time and progress[choose_type[3]] >= progress[choose_type[2]]:
+                    if not restudy_time_max and progress[choose_type[3]] >= progress[choose_type[2]]:
                         self.log.info(f"{category_prefix} 已达到要求，跳过")
                         break
 
@@ -229,12 +235,12 @@ class WeBanClient:
                         course_prefix = f"{category_prefix}/{course['resourceName']}"
                         # 获取学习进度
                         progress = self.get_progress(task["userProjectId"], category_prefix)
-                        if not restudy_time and progress[choose_type[3]] >= progress[choose_type[2]]:
+                        if not restudy_time_max and progress[choose_type[3]] >= progress[choose_type[2]]:
                             self.log.info(f"{category_prefix} 已达到要求，跳过")
                             break
 
                         self.log.info(f"开始处理课程：{course_prefix}")
-                        if not restudy_time and course["finished"] == 1:
+                        if not restudy_time_max and course["finished"] == 1:
                             self.log.success(f"{course_prefix} 已完成")
                             continue
 
@@ -252,9 +258,10 @@ class WeBanClient:
                             continue
 
                         sleep = 0
-                        while sleep < self.study_time:
+                        study_time = random.randint(study_time_min, study_time_max)
+                        while sleep < study_time:
                             if sleep % 60 == 0:
-                                self.log.info(f"{course_prefix} 等待 {self.study_time - sleep} 秒，模拟学习中...")
+                                self.log.info(f"{course_prefix} 等待 {study_time - sleep} 秒，模拟学习中...")
                             time.sleep(1)
                             sleep += 1
 
@@ -289,7 +296,7 @@ class WeBanClient:
 
             self.log.success(f"{project_prefix} 课程学习完成")
 
-    def run_exam(self, use_time: int = 250):
+    def run_exam(self, use_time_min: int = 120, use_time_max: int = 300) -> None:
         # 加载题库
         answers_json = {}
 
@@ -356,7 +363,8 @@ class WeBanClient:
                 prepare_paper = prepare_paper["data"]
                 question_num = prepare_paper["questionNum"]
                 self.log.info(f"考试信息：用户：{prepare_paper['realName']}，ID：{prepare_paper['userIDLabel']}，题目数：{question_num}，试卷总分：{prepare_paper['paperScore']}，限时 {prepare_paper['answerTime']} 分钟")
-                per_time = use_time // prepare_paper["questionNum"]
+                per_time_min = use_time_min // prepare_paper["questionNum"]
+                per_time_max = use_time_max // prepare_paper["questionNum"]
 
                 # 获取考试题目
                 exam_paper = self.api.exam_start_paper(user_exam_plan_id)
@@ -415,6 +423,7 @@ class WeBanClient:
                     self.log.info(f"题目类型：{question['typeLabel']}，题目标题：{question['title']}")
                     answers = answers_json[clean_text(question["title"])]
                     answers_ids = [option["id"] for option in question["optionList"] if clean_text(option["content"]) in answers]
+                    per_time = randint(per_time_min, per_time_max)
                     self.log.info(f"等待 {per_time} 秒，模拟答题中...")
                     time.sleep(per_time)
                     if not self.record_answer(user_exam_plan_id, question["id"], per_time + 1, answers_ids, exam_plan_id):

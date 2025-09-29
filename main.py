@@ -36,10 +36,20 @@ def run_account(config, account_index):
     password = config.get("password", "").strip()
     user = config.get("user", {})
     study = config.get("study", True)
-    study_time = int(config.get("study_time", 15))
-    restudy_time = int(config.get("restudy_time", 0))
+    study_time_max = int(config.get("study_time_max", 30))
+    study_time_min = int(config.get("study_time_min", 15))
+    restudy_time_min = int(config.get("restudy_time_min", 0))
+    restudy_time_max = int(config.get("restudy_time_max", 0))
     exam = config.get("exam", True)
-    exam_use_time = int(config.get("exam_use_time", 250))
+    exam_use_time_max = int(config.get("exam_use_time_max", 300))
+    exam_use_time_min = int(config.get("exam_use_time_min", 120))
+
+    if study_time_min > study_time_max:
+        raise ValueError("每门课程学习时间范围不正确，请检查 study_time_min 和 study_time_max 参数")
+    if restudy_time_min > restudy_time_max:
+        raise ValueError("复习时间范围不正确，请检查 restudy_time_min 和 restudy_time_max 参数")
+    if exam_use_time_min > exam_use_time_max:
+        raise ValueError("考试时间范围不正确，请检查 exam_use_time_min 和 exam_use_time_max 参数")
 
     if user.get("tenantName"):
         tenant_name = user["tenantName"]
@@ -67,12 +77,12 @@ def run_account(config, account_index):
             client.sync_answers()
 
         if study:
-            log.info(f"开始学习 (每个任务时长: {study_time}秒)")
-            client.run_study(study_time, restudy_time)
+            log.info(f"开始学习 (每个任务时长: {study_time_min} - {study_time_max}秒)")
+            client.run_study(study_time_min, study_time_max, restudy_time_min, restudy_time_max)
 
         if exam:
-            log.info(f"开始考试 (总时长: {exam_use_time}秒)")
-            client.run_exam(exam_use_time)
+            log.info(f"开始考试 (总时长: {exam_use_time_min} - {exam_use_time_max}秒)")
+            client.run_exam(exam_use_time_min, exam_use_time_max)
 
         log.info(f"最终同步答案")
         with sync_lock:
@@ -113,7 +123,9 @@ def create_initial_config() -> list[dict]:
     account = input(f"账号{prompt.get('userNamePrompt', '请输入')}：").strip()
     password = input(f"密码{prompt.get('passwordPrompt', '请输入')}：").strip()
 
-    configs = [{"tenant_name": tenant_name, "account": account, "password": password, "study": True, "user": {"userId": "", "token": ""}, "study_time": 15, "restudy_time": 0, "exam": True, "exam_use_time": 250}]
+    configs = [{"tenant_name": tenant_name, "account": account, "password": password, "study": True,
+                "user": {"userId": "", "token": ""}, "study_time_min": 15, "study_time_max":120, "restudy_time_min": 0, "restudy_time_max":0, "exam": True,
+                "exam_use_time": 250}]
 
     with open(config_path, "w", encoding="utf-8") as f:
         f.write(json.dumps(configs, indent=2, ensure_ascii=False))
@@ -157,7 +169,8 @@ if __name__ == "__main__":
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # 提交所有任务
-                future_to_account = {executor.submit(run_account, config, i): (config, i) for i, config in enumerate(configs)}
+                future_to_account = {executor.submit(run_account, config, i): (config, i) for i, config in
+                                     enumerate(configs)}
 
                 # 等待所有任务完成
                 for future in as_completed(future_to_account):
@@ -169,7 +182,7 @@ if __name__ == "__main__":
                         else:
                             failed_count += 1
                     except Exception as e:
-                        logger.error(f"[账号 {account_index+1}] 线程执行异常: {e}")
+                        logger.error(f"[账号 {account_index + 1}] 线程执行异常: {e}")
                         failed_count += 1
 
             logger.info(f"所有账号执行完成！成功: {success_count}，失败: {failed_count}")
